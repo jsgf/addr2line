@@ -302,46 +302,35 @@ impl<R: gimli::Reader> Context<R> {
         probe_low: u64,
         probe_high: u64,
     ) -> impl Iterator<Item = (&ResUnit<R>, &gimli::Range)> {
+        debug_assert!(probe_low <= probe_high);
+
         // First up find the position in the array which could have our function
         // address.
         let pos = match self
             .unit_ranges
-            .binary_search_by_key(&probe_high, |i| i.range.begin)
+            .binary_search_by_key(&probe_low, |ur| ur.range.begin)
         {
             // Although unlikely, we could find an exact match.
-            Ok(i) => i + 1,
+            Ok(i) => i,
             // No exact match was found, but this probe would fit at slot `i`.
-            // This means that slot `i` is bigger than `probe`, along with all
-            // indices greater than `i`, so we need to search all previous
-            // entries.
+            // which either means we should start here or the previous slot depending on
+            // the upper bound.
+            Err(i) if i > 0 && probe_low < self.unit_ranges[i - 1].range.end => i - 1,
             Err(i) => i,
         };
 
-        // Once we have our index we iterate backwards from that position
-        // looking for a matching CU.
-        self.unit_ranges[..pos]
+        // Once we have our index we iterate forwards over CUs the range covers
+        self.unit_ranges[pos..]
             .iter()
-            .rev()
             .take_while(move |i| {
-                // We know that this CU's start is beneath the probe already because
-                // of our sorted array.
-                debug_assert!(i.range.begin <= probe_high);
-
-                // Each entry keeps track of the maximum end address seen so far,
-                // starting from the beginning of the array of unit ranges. We're
-                // iterating in reverse so if our probe is beyond the maximum range
-                // of this entry, then it's guaranteed to not fit in any prior
-                // entries, so we break out.
-                probe_low < i.max_end
+                // The search above should get us a range at least larger than our
+                // lower bound.
+                debug_assert!(probe_low < i.range.end);
+                // Since we're iterating forward, we should keep iterating while the
+                // probe upper bound contains the start of the range.
+                probe_high > i.range.begin
             })
-            .filter_map(move |i| {
-                // If this CU doesn't actually contain this address, move to the
-                // next CU.
-                if probe_low >= i.range.end || probe_high <= i.range.begin {
-                    return None;
-                }
-                Some((&self.units[i.unit_id], &i.range))
-            })
+            .map(move |i| (&self.units[i.unit_id], &i.range))
     }
 
     /// Find the DWARF unit corresponding to the given virtual memory address.
